@@ -1,0 +1,59 @@
+# === Backup the ~/personal folder while keeping only the last 3 backups ===
+- name: Backup personal folder             # Name of the play
+  hosts: localhost                         # Run all tasks on the local machine
+  gather_facts: yes                        # Collect system facts (like HOME directory)
+
+  vars:
+    # --- Variables ---
+    src: "{{ ansible_env.HOME }}/personal"                # Source folder to back up
+    timestamp: "{{ lookup('pipe', 'date +%Y%m%d%H%M%S') }}" # Generate a timestamp (YYYYMMDDHHMMSS)
+    dest: "{{ ansible_env.HOME }}/backup_archive_{{ timestamp }}" # Destination backup folder
+    max_backups: 3                                        # Maximum number of backups to keep
+
+  tasks:
+    # --- Task 1: Create backup folder ---
+    - name: Create backup destination directory
+      file:
+        path: "{{ dest }}"        # Path of the new backup folder
+        state: directory          # Ensure the folder exists
+
+    # --- Task 2: Copy all contents including hidden files ---
+    - name: Copy contents from personal folder to backup folder (including hidden files)
+      synchronize:
+        src: "{{ src }}/"         # Source folder (trailing slash means "contents of folder")
+        dest: "{{ dest }}/"       # Destination folder
+        recursive: yes            # Copy subdirectories recursively
+        delete: no                # Do not delete anything in the destination
+        rsync_opts:               # Extra rsync options
+          - "--archive"           # Preserve file permissions, timestamps, etc.
+          - "--verbose"           # Show detailed output of copied files
+
+    # --- Task 3: Find all existing backups ---
+    - name: Find all existing backups
+      find:
+        paths: "{{ ansible_env.HOME }}"  # Look inside the HOME directory
+        file_type: directory             # Only consider directories
+        patterns: "backup_archive_*"    # Only folders starting with backup_archive_
+        age: 0                           # Include all (ignore age)
+      register: backups_found            # Save the list of found backups in a variable
+
+    # --- Task 4: Sort backups by newest first ---
+    - name: Sort backups by newest first
+      set_fact:
+        sorted_backups: "{{ backups_found.files | sort(attribute='mtime', reverse=True) }}"
+        # Sort the found backup folders by modification time (newest first)
+
+    # --- Task 5: Remove old backups beyond max_backups ---
+    - name: Remove old backups beyond max_backups
+      file:
+        path: "{{ item.path }}"   # Path of the old backup folder
+        state: absent             # Delete the folder
+      loop: "{{ sorted_backups[max_backups:] }}"  # Loop over backups older than the 3 newest
+      when: sorted_backups | length > max_backups
+      # Only delete if there are more backups than max_backups
+
+    # --- Task 6: Show remaining backups ---
+    - name: Show remaining backups
+      debug:
+        msg: "{{ sorted_backups[:max_backups] | map(attribute='path') | list }}"
+        # Print the paths of the remaining (kept) backups
